@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+venv/
+
+# Conda
+conda-meta/
+
+# MLflow
+mlruns/
+mlflow.db
+
+# Airflow
+airflow/logs/
+airflow/airflow.db
+
+# Data (optional – remove if you want data on GitHub)
+data/*.csv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Docker
+*.log

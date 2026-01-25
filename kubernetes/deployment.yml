@@ -1,0 +1,271 @@
+# Kubernetes Deployment for Travel ML Platform
+# Fixed version with proper configuration
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: travel-ml-config
+  namespace: default
+data:
+  API_VERSION: "v1"
+  LOG_LEVEL: "INFO"
+  MAX_WORKERS: "4"
+  FLASK_ENV: "production"
+
+---
+# PersistentVolume for model files
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: model-files-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadOnlyMany
+  hostPath:
+    path: /run/desktop/mnt/host/c/Users/dell/OneDrive/Desktop/Travel_mlops_capston_project/notebooks
+    type: Directory
+
+---
+# PersistentVolumeClaim for model files
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-files-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# Deployment for Flask API
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: travel-ml-api
+  namespace: default
+  labels:
+    app: travel-ml
+    component: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: travel-ml
+      component: api
+  template:
+    metadata:
+      labels:
+        app: travel-ml
+        component: api
+    spec:
+      containers:
+      - name: flask-api
+        image: travel-ml-api:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 5000
+          name: http
+          protocol: TCP
+        env:
+        - name: FLASK_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: travel-ml-config
+              key: FLASK_ENV
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: MODEL_PATH
+          value: "/app/models/"
+        volumeMounts:
+        - name: model-files
+          mountPath: /app/models
+          readOnly: true
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: model-files
+        persistentVolumeClaim:
+          claimName: model-files-pvc
+      restartPolicy: Always
+
+---
+# Service for Flask API
+apiVersion: v1
+kind: Service
+metadata:
+  name: travel-ml-api-service
+  namespace: default
+  labels:
+    app: travel-ml
+    component: api
+spec:
+  type: NodePort
+  selector:
+    app: travel-ml
+    component: api
+  ports:
+  - name: http
+    port: 5000
+    targetPort: 5000
+    nodePort: 30500
+    protocol: TCP
+  sessionAffinity: None
+
+---
+# Deployment for Streamlit UI
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: travel-ml-streamlit
+  namespace: default
+  labels:
+    app: travel-ml
+    component: ui
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: travel-ml
+      component: ui
+  template:
+    metadata:
+      labels:
+        app: travel-ml
+        component: ui
+    spec:
+      containers:
+      - name: streamlit-ui
+        image: travel-ml-streamlit:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8501
+          name: http
+          protocol: TCP
+        env:
+        - name: API_BASE_URL
+          value: "http://travel-ml-api-service:5000"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "300m"
+        livenessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: 8501
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: 8501
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      restartPolicy: Always
+
+---
+# Service for Streamlit UI
+apiVersion: v1
+kind: Service
+metadata:
+  name: travel-ml-streamlit-service
+  namespace: default
+  labels:
+    app: travel-ml
+    component: ui
+spec:
+  type: NodePort
+  selector:
+    app: travel-ml
+    component: ui
+  ports:
+  - name: http
+    port: 8501
+    targetPort: 8501
+    nodePort: 30850
+    protocol: TCP
+  sessionAffinity: None
+
+---
+# Horizontal Pod Autoscaler for API
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: travel-ml-api-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: travel-ml-api
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# Horizontal Pod Autoscaler for Streamlit
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: travel-ml-streamlit-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: travel-ml-streamlit
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

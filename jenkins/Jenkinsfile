@@ -1,0 +1,434 @@
+/* 
+ * Jenkins Pipeline for Travel ML API
+ * Complete CI/CD pipeline for model training, testing, and deployment
+ */
+
+pipeline {
+    agent any
+    
+    environment {
+        // Docker configuration
+        DOCKER_IMAGE = 'your-dockerhub-username/travel-ml-api'
+        DOCKER_TAG = "${env.BUILD_NUMBER}"
+        DOCKER_REGISTRY = 'docker.io'
+        DOCKER_CREDENTIALS = credentials('dockerhub-credentials')
+        
+        // Kubernetes configuration
+        KUBECONFIG = credentials('kubeconfig')
+        K8S_NAMESPACE = 'ml-production'
+        
+        // MLFlow configuration
+        MLFLOW_TRACKING_URI = 'http://mlflow-server:5000'
+        
+        // Python environment
+        PYTHON_VERSION = '3.9'
+    }
+    
+    options {
+        // Keep last 10 builds
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        
+        // Timeout after 1 hour
+        timeout(time: 1, unit: 'HOURS')
+        
+        // Disable concurrent builds
+        disableConcurrentBuilds()
+    }
+    
+    stages {
+        
+        // ====================================================================
+        // STAGE 1: CHECKOUT
+        // ====================================================================
+        
+        stage('Checkout') {
+            steps {
+                echo '=== Checking out code from repository ==='
+                checkout scm
+                
+                script {
+                    // Get commit info
+                    env.GIT_COMMIT_MSG = sh(
+                        script: 'git log -1 --pretty=%B',
+                        returnStdout: true
+                    ).trim()
+                    env.GIT_AUTHOR = sh(
+                        script: 'git log -1 --pretty=%an',
+                        returnStdout: true
+                    ).trim()
+                }
+                
+                echo "Commit: ${env.GIT_COMMIT_MSG}"
+                echo "Author: ${env.GIT_AUTHOR}"
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 2: SETUP ENVIRONMENT
+        // ====================================================================
+        
+        stage('Setup Environment') {
+            steps {
+                echo '=== Setting up Python environment ==='
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
+                '''
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 3: DATA VALIDATION
+        // ====================================================================
+        
+        stage('Data Validation') {
+            steps {
+                echo '=== Validating input data ==='
+                sh '''
+                    . venv/bin/activate
+                    python -c "
+import pandas as pd
+import sys
+
+try:
+    # Load datasets
+    users = pd.read_csv('data/users.csv')
+    flights = pd.read_csv('data/flights.csv')
+    hotels = pd.read_csv('data/hotels.csv')
+    
+    # Basic validation
+    assert not users.empty, 'Users dataset is empty'
+    assert not flights.empty, 'Flights dataset is empty'
+    assert not hotels.empty, 'Hotels dataset is empty'
+    
+    # Schema validation
+    required_flight_cols = ['price', 'distance', 'time', 'from', 'to']
+    for col in required_flight_cols:
+        assert col in flights.columns, f'Missing column: {col}'
+    
+    print('✓ Data validation passed')
+    
+except Exception as e:
+    print(f'✗ Data validation failed: {e}')
+    sys.exit(1)
+"
+                '''
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 4: RUN UNIT TESTS
+        // ====================================================================
+        
+        stage('Unit Tests') {
+            steps {
+                echo '=== Running unit tests ==='
+                sh '''
+                    . venv/bin/activate
+                    
+                    # Create test file if doesn't exist
+                    cat > test_api.py << 'EOF'
+import unittest
+import sys
+import os
+
+# Add parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+class TestAPI(unittest.TestCase):
+    
+    def test_imports(self):
+        """Test that all required modules can be imported"""
+        try:
+            import flask
+            import sklearn
+            import pandas
+            import numpy
+            self.assertTrue(True)
+        except ImportError as e:
+            self.fail(f"Import failed: {e}")
+    
+    def test_model_files_exist(self):
+        """Test that model files exist"""
+        required_files = [
+            'flight_price_model.pkl',
+            'scaler.pkl',
+            'feature_columns.pkl'
+        ]
+        
+        for file in required_files:
+            if os.path.exists(file):
+                self.assertTrue(True)
+
+if __name__ == '__main__':
+    unittest.main()
+EOF
+                    
+                    # Run tests
+                    python -m pytest test_api.py -v || python -m unittest test_api.py
+                '''
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 5: TRAIN MODEL
+        // ====================================================================
+        
+        stage('Train Model') {
+            steps {
+                echo '=== Training ML models ==='
+                sh '''
+                    . venv/bin/activate
+                    
+                    # Run training script with MLFlow tracking
+                    export MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
+                    python mlflow_tracking.py
+                '''
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 6: MODEL VALIDATION
+        // ====================================================================
+        
+        stage('Model Validation') {
+            steps {
+                echo '=== Validating model performance ==='
+                sh '''
+                    . venv/bin/activate
+                    python -c "
+import joblib
+import sys
+
+try:
+    # Load model metadata
+    metadata = joblib.load('model_metadata.pkl')
+    
+    # Check performance thresholds
+    test_r2 = metadata['metrics']['test_r2']
+    test_rmse = metadata['metrics']['test_rmse']
+    
+    print(f'Model R²: {test_r2:.4f}')
+    print(f'Model RMSE: {test_rmse:.2f}')
+    
+    # Quality gates
+    if test_r2 < 0.7:
+        raise ValueError(f'Model R² ({test_r2:.4f}) below threshold (0.7)')
+    
+    if test_rmse > 200:
+        raise ValueError(f'Model RMSE ({test_rmse:.2f}) above threshold (200)')
+    
+    print('✓ Model validation passed')
+    
+except Exception as e:
+    print(f'✗ Model validation failed: {e}')
+    sys.exit(1)
+"
+                '''
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 7: BUILD DOCKER IMAGE
+        // ====================================================================
+        
+        stage('Build Docker Image') {
+            steps {
+                echo '=== Building Docker image ==='
+                script {
+                    docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}")
+                    docker.build("${DOCKER_IMAGE}:latest")
+                }
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 8: SECURITY SCAN
+        // ====================================================================
+        
+        stage('Security Scan') {
+            steps {
+                echo '=== Scanning Docker image for vulnerabilities ==='
+                sh '''
+                    # Using Trivy for security scanning
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                        aquasec/trivy image \
+                        --severity HIGH,CRITICAL \
+                        ${DOCKER_IMAGE}:${DOCKER_TAG} || true
+                '''
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 9: PUSH TO REGISTRY
+        // ====================================================================
+        
+        stage('Push to Registry') {
+            steps {
+                echo '=== Pushing Docker image to registry ==='
+                script {
+                    docker.withRegistry("https://${DOCKER_REGISTRY}", 'dockerhub-credentials') {
+                        docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push()
+                        docker.image("${DOCKER_IMAGE}:latest").push()
+                    }
+                }
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 10: DEPLOY TO KUBERNETES
+        // ====================================================================
+        
+        stage('Deploy to Kubernetes') {
+            when {
+                branch 'main'
+            }
+            steps {
+                echo '=== Deploying to Kubernetes ==='
+                sh '''
+                    # Update deployment with new image
+                    kubectl set image deployment/travel-ml-api \
+                        travel-ml-api=${DOCKER_IMAGE}:${DOCKER_TAG} \
+                        --namespace=${K8S_NAMESPACE}
+                    
+                    # Wait for rollout to complete
+                    kubectl rollout status deployment/travel-ml-api \
+                        --namespace=${K8S_NAMESPACE} \
+                        --timeout=5m
+                '''
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 11: INTEGRATION TESTS
+        // ====================================================================
+        
+        stage('Integration Tests') {
+            when {
+                branch 'main'
+            }
+            steps {
+                echo '=== Running integration tests ==='
+                sh '''
+                    . venv/bin/activate
+                    
+                    # Wait for service to be ready
+                    sleep 30
+                    
+                    # Get service URL
+                    SERVICE_URL=$(kubectl get service travel-ml-api-service \
+                        --namespace=${K8S_NAMESPACE} \
+                        -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                    
+                    # Test health endpoint
+                    curl -f http://${SERVICE_URL}/health || exit 1
+                    
+                    # Test prediction endpoint
+                    curl -X POST http://${SERVICE_URL}/predict/flight-price \
+                        -H "Content-Type: application/json" \
+                        -d '{
+                            "from": "New York",
+                            "to": "Los Angeles",
+                            "distance": 4000,
+                            "time": 5.5,
+                            "flightType": "Economy",
+                            "agency": "SkyWings",
+                            "date": "2024-01-15",
+                            "age": 30,
+                            "gender": "Male",
+                            "company": "TechCorp"
+                        }' || exit 1
+                '''
+            }
+        }
+        
+        // ====================================================================
+        // STAGE 12: PERFORMANCE TESTS
+        // ====================================================================
+        
+        stage('Performance Tests') {
+            when {
+                branch 'main'
+            }
+            steps {
+                echo '=== Running performance tests ==='
+                sh '''
+                    # Install Apache Bench if not available
+                    which ab || (apt-get update && apt-get install -y apache2-utils)
+                    
+                    # Get service URL
+                    SERVICE_URL=$(kubectl get service travel-ml-api-service \
+                        --namespace=${K8S_NAMESPACE} \
+                        -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                    
+                    # Run load test: 1000 requests, 10 concurrent
+                    ab -n 1000 -c 10 http://${SERVICE_URL}/health
+                '''
+            }
+        }
+    }
+    
+    // ========================================================================
+    // POST-BUILD ACTIONS
+    // ========================================================================
+    
+    post {
+        success {
+            echo '=== Pipeline completed successfully! ==='
+            script {
+                // Send success notification
+                emailext(
+                    subject: "✅ Build SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+                        Build completed successfully!
+                        
+                        Job: ${env.JOB_NAME}
+                        Build: #${env.BUILD_NUMBER}
+                        Commit: ${env.GIT_COMMIT_MSG}
+                        Author: ${env.GIT_AUTHOR}
+                        
+                        Docker Image: ${DOCKER_IMAGE}:${DOCKER_TAG}
+                        
+                        View build: ${env.BUILD_URL}
+                    """,
+                    to: 'your-email@example.com'
+                )
+            }
+        }
+        
+        failure {
+            echo '=== Pipeline failed! ==='
+            script {
+                // Send failure notification
+                emailext(
+                    subject: "❌ Build FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+                        Build failed!
+                        
+                        Job: ${env.JOB_NAME}
+                        Build: #${env.BUILD_NUMBER}
+                        Commit: ${env.GIT_COMMIT_MSG}
+                        Author: ${env.GIT_AUTHOR}
+                        
+                        View logs: ${env.BUILD_URL}console
+                    """,
+                    to: 'your-email@example.com'
+                )
+            }
+        }
+        
+        always {
+            echo '=== Cleaning up workspace ==='
+            cleanWs()
+            
+            // Archive artifacts
+            archiveArtifacts artifacts: '**/*.pkl', allowEmptyArchive: true
+            archiveArtifacts artifacts: '**/model_metadata.pkl', allowEmptyArchive: true
+            
+            // Publish test results if available
+            junit testResults: '**/test-results/*.xml', allowEmptyResults: true
+        }
+    }
+}

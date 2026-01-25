@@ -1,0 +1,84 @@
+# Docker Compose Configuration for Travel MLOps Project
+# Place this file in: TRAVEL_MLOPS_CAPSTON_PROJECT/docker-compose.yml (ROOT directory)
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # FLASK API SERVICE
+  # ============================================================================
+  flask-api:
+    build:
+      context: .                     # ✅ build from ROOT (FIX)
+      dockerfile: api/Dockerfile     # ✅ explicit Dockerfile path
+    container_name: travel-ml-api
+    ports:
+      - "5000:5000"
+    volumes:
+      # Mount model files from notebooks/ directory
+      - ./notebooks:/app/notebooks:ro   # ✅ align with MODEL_DIR
+    environment:
+      - FLASK_ENV=production
+      - PYTHONUNBUFFERED=1
+      - MODEL_DIR=/app/notebooks        # ✅ matches Flask code
+    networks:
+      - ml-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "com.travel-mlops.service=api"
+      - "com.travel-mlops.version=1.0"
+
+  # ============================================================================
+  # STREAMLIT UI SERVICE
+  # ============================================================================
+  streamlit-ui:
+    build:
+      context: .                         # ✅ build from ROOT
+      dockerfile: streamlit/Dockerfile  # ✅ explicit Dockerfile path
+    container_name: travel-ml-streamlit
+    ports:
+      - "8501:8501"
+    volumes:
+      # Optional but safe if Streamlit also loads models
+      - ./notebooks:/app/notebooks:ro
+    environment:
+      # IMPORTANT: This tells Streamlit where to find Flask API
+      - API_BASE_URL=http://flask-api:5000
+      - MODEL_DIR=/app/notebooks
+    depends_on:
+      flask-api:
+        condition: service_healthy
+    networks:
+      - ml-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      - "com.travel-mlops.service=ui"
+      - "com.travel-mlops.version=1.0"
+
+# ============================================================================
+# NETWORKS
+# ============================================================================
+networks:
+  ml-network:
+    driver: bridge
+    name: travel-mlops-network
+
+# ============================================================================
+# VOLUMES (Optional - for persistent data)
+# ============================================================================
+# Uncomment if you want to use named volumes instead of bind mounts
+# volumes:
+#   model-data:
+#     driver: local
