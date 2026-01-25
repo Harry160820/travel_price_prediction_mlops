@@ -460,7 +460,7 @@ This project is licensed under the MIT License.
 
 ## 👥 Authors
 
-- Your Name - [GitHub](https://github.com/Harry160820)
+- Hari Om - [GitHub](https://github.com/Harry160820)
 
 ## Acknowledgments
 
