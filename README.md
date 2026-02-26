@@ -92,6 +92,8 @@ The project leverages data analytics and machine learning to revolutionize trave
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Basic system-design(Intuition): [System-Design](https://app.eraser.io/workspace/FXN4MXxRBYcHAnMHuXxx?origin=share)
+
 ## Prerequisites
 
 ### Software Requirements
