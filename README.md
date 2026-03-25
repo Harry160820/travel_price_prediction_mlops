@@ -19,7 +19,7 @@ Complete end-to-end Machine Learning Operations (MLOps) pipeline for travel pric
 
 ##  Project Overview
 
-This capstone project demonstrates a complete MLOps workflow for travel-related machine learning models:
+This project demonstrates a complete MLOps workflow for travel-related machine learning models:
 
 1. **Flight Price Prediction** (Regression)
 2. **Gender Classification** (Classification)
